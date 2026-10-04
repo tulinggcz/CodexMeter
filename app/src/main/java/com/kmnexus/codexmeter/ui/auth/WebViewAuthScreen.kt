@@ -352,9 +352,20 @@ private fun CookieAuthBody(
                 "webviewPackage=${WebView.getCurrentWebViewPackage()?.versionName ?: "unknown"}\n" +
                 "provider=${config.providerId}\n" +
                 "cookieUrls=$cookieUrls\n---\n"
+            val ts = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(java.util.Date())
+            val dir = java.io.File(context.cacheDir, "auth_logs").apply { mkdirs() }
+            val file = java.io.File(dir, "codexmeter-diag-$ts.log")
+            file.writeText(header + AuthLogStore.dump())
+            // Share as a file attachment: the full buffer overflows chat-app message limits,
+            // so a content URI via FileProvider is the primary channel.
+            val uri = androidx.core.content.FileProvider.getUriForFile(
+                context, "${context.packageName}.logprovider", file,
+            )
             val send = Intent(Intent.ACTION_SEND).apply {
                 type = "text/plain"
-                putExtra(Intent.EXTRA_TEXT, header + AuthLogStore.dump())
+                putExtra(Intent.EXTRA_STREAM, uri)
+                putExtra(Intent.EXTRA_SUBJECT, "CodexMeter diagnostics")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
             context.startActivity(Intent.createChooser(send, context.getString(R.string.auth_share_log)))
         }

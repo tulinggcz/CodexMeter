@@ -29,6 +29,18 @@
                 tools:node="remove" />
         </provider>
 
+        <!-- Exports the auth WebView diagnostics log as a shareable file; plain-text sharing
+             hits message-size limits in chat apps, so the log goes out as a .log attachment. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.logprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/auth_log_paths" />
+        </provider>
+
         <activity
             android:name=".MainActivity"
             android:exported="true">
