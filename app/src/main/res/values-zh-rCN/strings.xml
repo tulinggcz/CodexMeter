@@ -23,9 +23,10 @@
     <string name="auth_confirm_login">完成登录</string>
     <string name="auth_clear_cookies">清除 Cookie</string>
     <string name="auth_reload">重载授权页</string>
+    <string name="auth_share_log">分享诊断日志</string>
     <string name="auth_tip_title">登录提示</string>
     <string name="auth_tip_got_it">知道了</string>
-    <string name="auth_tip_kimi">kimi 网页由于内嵌浏览器限制无法显示内容。通过手机号码登录后，点击右上角的 %1$s 图标即可，应用将自动验证并保存登录信息。</string>
+    <string name="auth_tip_kimi">kimi 控制台页面在内嵌浏览器中无法显示，约 10 秒后会自动跳转到 kimi.com。请用手机号在页面上登录，登录完成后会话会自动捕获保存；若未自动完成，再点击右上角的 %1$s 图标。</string>
     <string name="auth_tip_claude">由于内嵌浏览器限制，授权页面打开可能卡顿。若登录后授权页面长时间不弹出，点击右上角的 %1$s 图标重新载入授权页。</string>
     <string name="auth_select_region">选择区域</string>
     <string name="auth_oauth_browser_instruction">在浏览器中完成授权后返回 CodexMeter。</string>

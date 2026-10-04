@@ -23,9 +23,10 @@
     <string name="auth_confirm_login">Done</string>
     <string name="auth_clear_cookies">Clear cookies</string>
     <string name="auth_reload">Reload</string>
+    <string name="auth_share_log">Share diagnostics log</string>
     <string name="auth_tip_title">Before you sign in</string>
     <string name="auth_tip_got_it">Got it</string>
-    <string name="auth_tip_kimi">Kimi\'s page can\'t render inside the in-app browser. Sign in with your phone number, then tap the %1$s icon in the top-right — CodexMeter verifies and saves your login automatically.</string>
+    <string name="auth_tip_kimi">Kimi\'s console page can\'t render in the in-app browser, so after about 10 seconds it jumps to kimi.com automatically. Sign in there with your phone number — the session is captured automatically once login finishes. If it isn\'t, tap the %1$s icon in the top-right.</string>
     <string name="auth_tip_claude">Because of in-app browser limits, the authorization page can be slow to open. If the consent screen doesn\'t appear after you sign in, tap the %1$s icon in the top-right to reload the authorization page.</string>
     <string name="auth_select_region">Select region</string>
     <string name="auth_oauth_browser_instruction">Authorize in your browser, then return to CodexMeter.</string>

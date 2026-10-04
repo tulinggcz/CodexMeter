@@ -373,6 +373,12 @@ fun CodexMeterNavHost(
                                         cookieDomain = "www.kimi.com",
                                         targetCookieNames = listOf("kimi-auth"),
                                         autoCapture = false,
+                                        // The landing-page login may set kimi-auth on the apex
+                                        // domain instead of www; probe both when reading.
+                                        additionalCookieUrls = listOf("https://kimi.com"),
+                                        // Kimi sets a guest kimi-auth before login; capture once it
+                                        // changes to the real session token instead of a presence check.
+                                        captureOnCookieChange = true,
                                         tipResId = R.string.auth_tip_kimi,
                                         // kimi's logged-out /code landing collapses to 0-height in a
                                         // WebView; its login button opens a working modal. The old

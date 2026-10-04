@@ -91,6 +91,13 @@ sealed interface WebViewAuthConfig {
          * submit a pre-login token and fail with 401.
          */
         val autoCapture: Boolean = true,
+        /** Extra cookie-store URLs probed in addition to the primary domain when reading the
+         *  target cookie (e.g. apex + www variants of the same site). */
+        val additionalCookieUrls: List<String> = emptyList(),
+        /** Capture automatically once the target cookie's value changes from the value first
+         *  observed on load. Kimi sets a guest value before login, so a plain presence check
+         *  would submit the pre-login token and fail with 401. */
+        val captureOnCookieChange: Boolean = false,
         /** Optional JS run on every page load — e.g. to open a provider's login modal automatically. */
         val injectOnLoadJs: String? = null,
         /** Optional one-time tip dialog shown when the screen opens (string resource id). */
@@ -163,6 +170,7 @@ fun WebViewAuthScreen(
     var webViewReload by remember(config) { mutableStateOf<(() -> Unit)?>(null) }
     var clearSession by remember(config) { mutableStateOf<(() -> Unit)?>(null) }
     var confirmLogin by remember(config) { mutableStateOf<(() -> Unit)?>(null) }
+    var shareLog by remember(config) { mutableStateOf<(() -> Unit)?>(null) }
 
     AuthScaffold(
         title = providerConfig.displayName,
@@ -178,6 +186,9 @@ fun WebViewAuthScreen(
             confirmLogin?.let { confirm ->
                 AuthActionIcon(R.drawable.ic_action_done, R.string.auth_confirm_login, confirm)
             }
+            shareLog?.let { share ->
+                AuthActionIcon(R.drawable.ic_action_share, R.string.auth_share_log, share)
+            }
         },
     ) {
         when (config) {
@@ -190,6 +201,7 @@ fun WebViewAuthScreen(
                 onError = { errorMessage = it },
                 onClearAction = { clearSession = it },
                 onConfirmAction = { confirmLogin = it },
+                onShareAction = { shareLog = it },
             )
             is WebViewAuthConfig.OAuthIntercept -> OAuthInterceptBody(
                 modifier = Modifier.weight(1f),
@@ -292,13 +304,16 @@ private fun CookieAuthBody(
     onError: (String) -> Unit,
     onClearAction: (() -> Unit) -> Unit,
     onConfirmAction: (() -> Unit) -> Unit,
+    onShareAction: (() -> Unit) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val context = LocalContext.current
     var selectedRegion by remember {
         mutableStateOf(config.regions.firstOrNull())
     }
     val loginUrl = selectedRegion?.loginUrl ?: config.loginUrl
     val cookieDomain = selectedRegion?.cookieDomain ?: config.cookieDomain
+    val cookieUrls = (listOf("https://$cookieDomain") + config.additionalCookieUrls).distinct()
     val noSession = stringResource(R.string.auth_cookie_no_session)
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
 
@@ -319,8 +334,25 @@ private fun CookieAuthBody(
         }
         onConfirmAction {
             CookieManager.getInstance().flush()
-            val value = readTargetCookie("https://$cookieDomain", config.targetCookieNames)
-            if (value != null) onCredential(value, null) else onError(noSession)
+            val value = cookieUrls.firstNotNullOfOrNull { readTargetCookie(it, config.targetCookieNames) }
+            if (value != null) {
+                AuthLogStore.log('I', "manual confirm: target cookie found")
+                onCredential(value, null)
+            } else {
+                AuthLogStore.log('E', "manual confirm: no target cookie in $cookieUrls")
+                onError(noSession)
+            }
+        }
+        onShareAction {
+            val header = "CodexMeter auth diagnostics\n" +
+                "webviewPackage=${WebView.getCurrentWebViewPackage()?.versionName ?: "unknown"}\n" +
+                "provider=${config.providerId}\n" +
+                "cookieUrls=$cookieUrls\n---\n"
+            val send = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, header + AuthLogStore.dump())
+            }
+            context.startActivity(Intent.createChooser(send, context.getString(R.string.auth_share_log)))
         }
     }
 
@@ -363,10 +395,10 @@ private fun CookieAuthBody(
                         WebView(ctx).apply {
                             configureAuthWebView(this, useSoftwareLayer = true)
                             webViewClient = CookieCaptureClient(
-                                // Null capture URL = manual-only (user taps "Done"); avoids submitting
-                                // a pre-login guest cookie.
-                                cookieUrl = if (config.autoCapture) "https://$cookieDomain" else null,
+                                cookieUrls = cookieUrls,
                                 targetCookieNames = config.targetCookieNames,
+                                autoCapture = config.autoCapture,
+                                captureOnCookieChange = config.captureOnCookieChange,
                                 onLoadJs = config.injectOnLoadJs,
                                 onCookie = { onCredential(it, null) },
                             )
@@ -509,6 +541,34 @@ private fun ErrorLine(message: String) {
 }
 
 /**
+ * Ring buffer of auth-WebView diagnostics, mirrored to logcat (tag WebViewAuth). The top-bar
+ * share action sends the buffer as plain text so blank-page failures can be reported from the
+ * phone without adb. Raw cookie values are never recorded — names and lengths only.
+ */
+internal object AuthLogStore {
+    private const val TAG = "WebViewAuth"
+    private const val MAX_LINES = 400
+    private val buf = ArrayDeque<String>()
+    private val timeFmt = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US)
+
+    @Synchronized
+    fun log(level: Char, msg: String) {
+        android.util.Log.println(priority(level), TAG, msg)
+        buf.addLast(timeFmt.format(java.util.Date()) + " " + msg)
+        while (buf.size > MAX_LINES) buf.removeFirst()
+    }
+
+    @Synchronized
+    fun dump(): String = buf.joinToString("\n")
+
+    private fun priority(level: Char): Int = when (level) {
+        'E' -> android.util.Log.ERROR
+        'W' -> android.util.Log.WARN
+        else -> android.util.Log.INFO
+    }
+}
+
+/**
  * Anti-detection configuration shared by the embedded auth WebViews (Cursor/Kimi cookie capture,
  * Claude OAuth intercept). Android's default WebView user-agent carries a `; wv` token and a
  * `Version/x.y` marker that Google's sign-in ("disallowed_useragent") and Cloudflare's managed
@@ -526,8 +586,8 @@ private fun configureAuthWebView(webView: WebView, useSoftwareLayer: Boolean) {
     webView.webChromeClient = object : WebChromeClient() {
         override fun onConsoleMessage(message: android.webkit.ConsoleMessage?): Boolean {
             message ?: return false
-            android.util.Log.w(
-                "WebViewAuth",
+            AuthLogStore.log(
+                'W',
                 "console[${message.messageLevel()}] ${message.message()} @ ${message.sourceId()}:${message.lineNumber()}"
             )
             return true
@@ -560,15 +620,27 @@ private fun configureAuthWebView(webView: WebView, useSoftwareLayer: Boolean) {
 }
 
 private class CookieCaptureClient(
-    private val cookieUrl: String?,
+    private val cookieUrls: List<String>,
     private val targetCookieNames: List<String>,
+    private val autoCapture: Boolean,
+    private val captureOnCookieChange: Boolean,
     private val onLoadJs: String?,
     private val onCookie: (String) -> Unit,
 ) : WebViewClient() {
+    /** Target-cookie value per URL as first seen on load; a change from this is a real login. */
+    private var baseline: Map<String, String?>? = null
+    private var pollStopped = false
+    private var ticks = 0
+
     override fun onPageFinished(view: WebView?, url: String?) {
         onLoadJs?.let { view?.evaluateJavascript(it, null) }
         probePageMetrics(view, url, "finished")
+        logCookieFingerprint("finished")
+        if (captureOnCookieChange && baseline == null) {
+            baseline = cookieSnapshot()
+        }
         tryExtract()
+        if (captureOnCookieChange && !pollStopped) schedulePoll(view)
     }
 
     override fun onReceivedError(
@@ -578,7 +650,7 @@ private class CookieCaptureClient(
     ) {
         // Main-frame failures blank the whole page; subframe/resource failures usually don't.
         if (request?.isForMainFrame == true) {
-            android.util.Log.e("WebViewAuth", "mainFrameError url=${request.url} err=${error?.description}")
+            AuthLogStore.log('E', "mainFrameError url=${request.url} err=${error?.description}")
         }
     }
 
@@ -588,8 +660,8 @@ private class CookieCaptureClient(
         errorResponse: android.webkit.WebResourceResponse?,
     ) {
         if (request?.isForMainFrame == true) {
-            android.util.Log.e(
-                "WebViewAuth",
+            AuthLogStore.log(
+                'E',
                 "mainFrameHttpError url=${request.url} status=${errorResponse?.statusCode} reason=${errorResponse?.reasonPhrase}"
             )
         }
@@ -598,7 +670,7 @@ private class CookieCaptureClient(
     override fun onRenderProcessGone(view: WebView?, detail: android.webkit.RenderProcessGoneDetail?): Boolean {
         // The renderer crashed; the WebView is dead and would stay white forever. Log it and
         // restart the load so the user sees something actionable instead of a blank surface.
-        android.util.Log.e("WebViewAuth", "renderProcessGone crashed=${detail?.didCrash()} — reloading")
+        AuthLogStore.log('E', "renderProcessGone crashed=${detail?.didCrash()} — reloading")
         view?.reload()
         // false = this app keeps the (now restarted) WebView instance alive.
         return false
@@ -613,13 +685,39 @@ private class CookieCaptureClient(
         view ?: return
         val probe = "(function(){try{return document.body?document.body.scrollHeight+'|'+document.readyState:'nobody'}catch(e){return 'err'}})()"
         view.evaluateJavascript(probe) { result ->
-            android.util.Log.w("WebViewAuth", "probe[$phase] url=$url metrics=$result")
+            AuthLogStore.log('W', "probe[$phase] url=$url metrics=$result")
         }
         view.postDelayed({
             view.evaluateJavascript(probe) { result ->
-                android.util.Log.w("WebViewAuth", "probe[$phase+4s] url=$url metrics=$result")
+                AuthLogStore.log('W', "probe[$phase+4s] url=$url metrics=$result")
             }
         }, 4000)
+    }
+
+    /**
+     * Kimi's post-login page renders blank in the WebView, so waiting for a manual "Done" tap
+     * would strand the user on a white screen. Poll the cookie store instead and capture the
+     * moment the target cookie changes from its load-time value (guest -> real session).
+     */
+    private fun schedulePoll(view: WebView?) {
+        view ?: return
+        view.postDelayed({
+            if (pollStopped) return@postDelayed
+            val snapshot = cookieSnapshot()
+            if (ticks % 4 == 0) logCookieFingerprint("poll$ticks")
+            val changed = snapshot.entries
+                .filter { it.value != null && baseline?.get(it.key) != it.value }
+                .map { it.value!! }
+            if (changed.isNotEmpty()) {
+                pollStopped = true
+                CookieManager.getInstance().flush()
+                AuthLogStore.log('I', "target cookie changed since load -> auto-capture")
+                onCookie(changed.first())
+                return@postDelayed
+            }
+            ticks++
+            if (ticks < 120) schedulePoll(view)
+        }, 1500)
     }
 
     override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
@@ -627,11 +725,29 @@ private class CookieCaptureClient(
     }
 
     private fun tryExtract() {
-        // cookieUrl == null means manual-only capture (the user taps "Done").
-        val target = cookieUrl ?: return
-        val value = readTargetCookie(target, targetCookieNames) ?: return
+        // autoCapture == false means manual-only capture (the user taps "Done").
+        if (!autoCapture) return
+        val value = cookieUrls.firstNotNullOfOrNull { readTargetCookie(it, targetCookieNames) } ?: return
         CookieManager.getInstance().flush()
         onCookie(value)
+    }
+
+    private fun cookieSnapshot(): Map<String, String?> =
+        cookieUrls.associateWith { readTargetCookie(it, targetCookieNames) }
+
+    /** Logs cookie names + value lengths only; raw values never enter the log. */
+    private fun logCookieFingerprint(phase: String) {
+        val sb = StringBuilder()
+        for (url in cookieUrls) {
+            val raw = CookieManager.getInstance().getCookie(url).orEmpty()
+            val fp = raw.split(";").mapNotNull { part ->
+                val pair = part.trim().split("=", limit = 2)
+                val name = pair.getOrNull(0)?.trim().orEmpty()
+                if (name.isEmpty()) null else "$name(${pair.getOrNull(1)?.trim()?.length ?: 0})"
+            }.joinToString(",")
+            sb.append(" cookies[$url]=[$fp]")
+        }
+        AuthLogStore.log('I', "fingerprint[$phase]$sb")
     }
 }
 
