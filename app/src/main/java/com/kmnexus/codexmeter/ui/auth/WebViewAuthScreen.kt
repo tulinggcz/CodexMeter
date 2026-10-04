@@ -528,7 +528,7 @@ private fun configureAuthWebView(webView: WebView, useSoftwareLayer: Boolean) {
             message ?: return false
             android.util.Log.w(
                 "WebViewAuth",
-                "console[${message.messageLevel()}] ${message.message()} @ ${message.sourceLine()}"
+                "console[${message.messageLevel()}] ${message.message()} @ ${message.sourceId()}:${message.lineNumber()}"
             )
             return true
         }
@@ -595,11 +595,13 @@ private class CookieCaptureClient(
         }
     }
 
-    override fun onRenderProcessGone(view: WebView?, detail: android.webkit.RenderProcessGoneDetail?) {
+    override fun onRenderProcessGone(view: WebView?, detail: android.webkit.RenderProcessGoneDetail?): Boolean {
         // The renderer crashed; the WebView is dead and would stay white forever. Log it and
         // restart the load so the user sees something actionable instead of a blank surface.
         android.util.Log.e("WebViewAuth", "renderProcessGone crashed=${detail?.didCrash()} — reloading")
         view?.reload()
+        // false = this app keeps the (now restarted) WebView instance alive.
+        return false
     }
 
     /**
