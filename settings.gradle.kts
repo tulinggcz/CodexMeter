@@ -1,6 +1,6 @@
 pluginManagement {
     repositories {
-        maven("https://dl-ssl.google.com/dl/android/maven2/") {
+        maven("https://dl.google.com/dl/android/maven2/") {
             name = "GoogleDlSsl"
         }
         mavenCentral()
@@ -11,7 +11,7 @@ pluginManagement {
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
-        maven("https://dl-ssl.google.com/dl/android/maven2/") {
+        maven("https://dl.google.com/dl/android/maven2/") {
             name = "GoogleDlSsl"
         }
         mavenCentral()
