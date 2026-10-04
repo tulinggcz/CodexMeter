@@ -153,6 +153,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.qm.liquidglass.core)
     implementation("androidx.browser:browser:1.8.0")
+    implementation("androidx.webkit:webkit:1.13.0")
 
     debugImplementation(libs.compose.ui.tooling)
 

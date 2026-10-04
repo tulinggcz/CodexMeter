@@ -379,6 +379,9 @@ fun CodexMeterNavHost(
                                         // Kimi sets a guest kimi-auth before login; capture once it
                                         // changes to the real session token instead of a presence check.
                                         captureOnCookieChange = true,
+                                        // Kimi's front-end (TrustDecision anti-bot) refuses to render
+                                        // inside an embedded WebView; shim the detection vectors.
+                                        antiDetect = true,
                                         tipResId = R.string.auth_tip_kimi,
                                         // kimi's logged-out /code landing collapses to 0-height in a
                                         // WebView; its login button opens a working modal. The old

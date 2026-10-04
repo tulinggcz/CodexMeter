@@ -98,6 +98,10 @@ sealed interface WebViewAuthConfig {
          *  observed on load. Kimi sets a guest value before login, so a plain presence check
          *  would submit the pre-login token and fail with 401. */
         val captureOnCookieChange: Boolean = false,
+        /** Install the document-start anti-detection shim (UA-CH brands + plugins). Needed for
+         *  sites whose front-end or anti-bot SDK refuses to render inside an embedded WebView
+         *  (Kimi + TrustDecision). Off for providers that already work (Cursor). */
+        val antiDetect: Boolean = false,
         /** Optional JS run on every page load — e.g. to open a provider's login modal automatically. */
         val injectOnLoadJs: String? = null,
         /** Optional one-time tip dialog shown when the screen opens (string resource id). */
@@ -394,12 +398,14 @@ private fun CookieAuthBody(
                     factory = { ctx ->
                         WebView(ctx).apply {
                             configureAuthWebView(this, useSoftwareLayer = true)
+                            if (config.antiDetect) installAntiDetectDocumentStart(this)
                             webViewClient = CookieCaptureClient(
                                 cookieUrls = cookieUrls,
                                 targetCookieNames = config.targetCookieNames,
                                 autoCapture = config.autoCapture,
                                 captureOnCookieChange = config.captureOnCookieChange,
                                 onLoadJs = config.injectOnLoadJs,
+                                onStartJs = if (config.antiDetect) ANTI_DETECT_JS else null,
                                 onCookie = { onCredential(it, null) },
                             )
                             webViewRef = this
@@ -569,6 +575,68 @@ internal object AuthLogStore {
 }
 
 /**
+ * Stealth shim injected at document start (androidx.webkit addDocumentStartJavaScript) so it runs
+ * before the page's own scripts — including anti-bot SDKs like Kimi's TrustDecision. The UA string
+ * is already rewritten to look like Chrome, but two modern WebView tells survive that rewrite:
+ * navigator.userAgentData.brands lists "Android WebView" (UA-CH) and navigator.plugins is empty.
+ * Both are standard embedded-browser detection vectors; this shim cleans the brands list (the
+ * synchronous property and getHighEntropyValues) and fakes Chrome's PDF plugin/mimeType entries.
+ */
+private val ANTI_DETECT_JS = """
+    (function(){
+      function clean(bs){
+        var out=[],i;
+        for(i=0;i<bs.length;i++){if(!/webview/i.test(bs[i].brand)){out.push(bs[i]);}}
+        var hasC=false;
+        for(i=0;i<out.length;i++){if(/chrome/i.test(out[i].brand)){hasC=true;break;}}
+        if(!hasC){
+          var m=/Chrome\/(\d+)/.exec(navigator.userAgent),v=m?m[1]:'120';
+          out.push({brand:'Chromium',version:v});
+          out.push({brand:'Google Chrome',version:v});
+        }
+        return out;
+      }
+      try{
+        var uad=navigator.userAgentData;
+        if(uad){
+          var ob=uad.brands;
+          Object.defineProperty(uad,'brands',{configurable:true,enumerable:true,get:function(){return clean(ob);}});
+          var oh=uad.getHighEntropyValues;
+          if(typeof oh==='function'){
+            var bound=oh.bind(uad);
+            uad.getHighEntropyValues=function(h){return bound(h).then(function(r){try{r.brands=clean(r.brands);}catch(e){}return r;});};
+          }
+        }
+      }catch(e){}
+      try{
+        var pl=[{name:'Chrome PDF Viewer',filename:'internal-pdf-viewer',description:'Portable Document Format',length:1}];
+        pl[0][0]={type:'application/pdf',suffixes:'pdf',description:'Portable Document Format'};
+        pl.refresh=function(){};
+        Object.defineProperty(navigator,'plugins',{configurable:true,get:function(){return pl;}});
+        var mt=[{type:'application/pdf',suffixes:'pdf',description:'Portable Document Format',enabledPlugin:pl[0]}];
+        Object.defineProperty(navigator,'mimeTypes',{configurable:true,get:function(){return mt;}});
+      }catch(e){}
+    })();
+""".trimIndent()
+
+/** Registers [ANTI_DETECT_JS] to run before any page script on kimi.com documents. */
+@OptIn(androidx.webkit.ExperimentalWebViewApi::class)
+private fun installAntiDetectDocumentStart(webView: WebView) {
+    runCatching {
+        if (androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            androidx.webkit.WebViewCompat.addDocumentStartJavaScript(
+                webView,
+                ANTI_DETECT_JS,
+                setOf("https://kimi.com", "https://*.kimi.com"),
+            )
+            AuthLogStore.log('I', "documentStart anti-detect shim installed")
+        } else {
+            AuthLogStore.log('W', "DOCUMENT_START_SCRIPT unsupported; relying on onPageStarted re-injection")
+        }
+    }.onFailure { AuthLogStore.log('E', "documentStart install failed: ${it.message}") }
+}
+
+/**
  * Anti-detection configuration shared by the embedded auth WebViews (Cursor/Kimi cookie capture,
  * Claude OAuth intercept). Android's default WebView user-agent carries a `; wv` token and a
  * `Version/x.y` marker that Google's sign-in ("disallowed_useragent") and Cloudflare's managed
@@ -625,12 +693,19 @@ private class CookieCaptureClient(
     private val autoCapture: Boolean,
     private val captureOnCookieChange: Boolean,
     private val onLoadJs: String?,
+    private val onStartJs: String?,
     private val onCookie: (String) -> Unit,
 ) : WebViewClient() {
     /** Target-cookie value per URL as first seen on load; a change from this is a real login. */
     private var baseline: Map<String, String?>? = null
     private var pollStopped = false
     private var ticks = 0
+
+    override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+        // Belt-and-braces re-injection when the document-start API (androidx.webkit) is not
+        // available; the shim is idempotent so double execution is harmless.
+        onStartJs?.let { view?.evaluateJavascript(it, null) }
+    }
 
     override fun onPageFinished(view: WebView?, url: String?) {
         onLoadJs?.let { view?.evaluateJavascript(it, null) }
@@ -683,7 +758,7 @@ private class CookieCaptureClient(
      */
     private fun probePageMetrics(view: WebView?, url: String?, phase: String) {
         view ?: return
-        val probe = "(function(){try{return document.body?document.body.scrollHeight+'|'+document.readyState:'nobody'}catch(e){return 'err'}})()"
+        val probe = "(function(){try{var b=navigator.userAgentData?navigator.userAgentData.brands.map(function(x){return x.brand}).join('/'):'nouad';return (document.body?document.body.scrollHeight:'nobody')+'|'+document.readyState+'|plugins='+navigator.plugins.length+'|brands='+b;}catch(e){return 'err:'+e;}})()"
         view.evaluateJavascript(probe) { result ->
             AuthLogStore.log('W', "probe[$phase] url=$url metrics=$result")
         }
