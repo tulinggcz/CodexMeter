@@ -620,7 +620,6 @@ private val ANTI_DETECT_JS = """
 """.trimIndent()
 
 /** Registers [ANTI_DETECT_JS] to run before any page script on kimi.com documents. */
-@OptIn(androidx.webkit.ExperimentalWebViewApi::class)
 private fun installAntiDetectDocumentStart(webView: WebView) {
     runCatching {
         if (androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.DOCUMENT_START_SCRIPT)) {
