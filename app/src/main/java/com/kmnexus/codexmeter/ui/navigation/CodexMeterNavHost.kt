@@ -375,14 +375,37 @@ fun CodexMeterNavHost(
                                         autoCapture = false,
                                         tipResId = R.string.auth_tip_kimi,
                                         // kimi's logged-out /code landing collapses to 0-height in a
-                                        // WebView, but its login button opens a working modal — so open
-                                        // it automatically (guarded so it won't re-trigger once shown).
+                                        // WebView; its login button opens a working modal. The old
+                                        // one-shot click raced SPA hydration and lost (blank page +
+                                        // modal flash). Now: CSS keeps the page full-height, clicks
+                                        // are rate-limited and never match logout, and an observer
+                                        // retries until the login modal's inputs actually mount.
                                         injectOnLoadJs = """
-                                            if(!document.querySelector('input[type=tel]')){
-                                              var t=[].slice.call(document.querySelectorAll('a,button,[role=button]'))
-                                                .filter(function(e){return /登录|登入|log\s*in|sign\s*in/i.test(e.textContent||'')})[0];
-                                              if(t)t.click();
-                                            }
+                                            (function(){
+                                              var s=document.createElement('style');
+                                              s.textContent='html,body,#root,#__next{min-height:100% !important}';
+                                              (document.head||document.documentElement).appendChild(s);
+                                              var lastClick=0;
+                                              function loginShown(){
+                                                return !!document.querySelector('input[type=tel],input[type=email],input[type=password]');
+                                              }
+                                              function tryOpen(){
+                                                if(loginShown())return true;
+                                                var now=Date.now();
+                                                if(now-lastClick<1500)return false;
+                                                var t=[].slice.call(document.querySelectorAll('a,button,[role=button]'))
+                                                  .filter(function(e){
+                                                    var x=e.textContent||'';
+                                                    return !/退出|log\s*out|sign\s*out/i.test(x)&&/登录|登入|log\s*in|sign\s*in/i.test(x);
+                                                  })[0];
+                                                if(t){lastClick=now;t.click();}
+                                                return false;
+                                              }
+                                              if(tryOpen())return;
+                                              var obs=new MutationObserver(function(){if(tryOpen())obs.disconnect();});
+                                              obs.observe(document.documentElement,{childList:true,subtree:true});
+                                              setTimeout(function(){obs.disconnect();},15000);
+                                            })();
                                         """.trimIndent(),
                                     )
                                     else -> null
