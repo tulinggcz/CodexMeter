@@ -590,35 +590,63 @@ internal object AuthLogStore {
  * before the page's own scripts — including anti-bot SDKs like Kimi's TrustDecision. The UA string
  * is already rewritten to look like Chrome, but two modern WebView tells survive that rewrite:
  * navigator.userAgentData.brands lists "Android WebView" (UA-CH) and navigator.plugins is empty.
- * Both are standard embedded-browser detection vectors; this shim cleans the brands list (the
- * synchronous property and getHighEntropyValues) and fakes Chrome's PDF plugin/mimeType entries.
+ * v2 lesson from kifix4 logs: patching the brands property on the userAgentData *instance* failed
+ * (Blink hands out fresh instances / the instance patch is dropped), leaving a torn fingerprint —
+ * faked Chrome plugins but raw WebView brands — which is itself a detection signal. The fix patches
+ * NavigatorUAData.prototype instead, so every instance inherits the cleaned brands, and completes
+ * the Chrome brand set (Chromium + Google Chrome). window.__kifix marks main-world visibility so
+ * probes can verify the shim actually applied where the page can see it.
  */
 private val ANTI_DETECT_JS = """
     (function(){
+      var m=/Chrome\/(\d+)/.exec(navigator.userAgent), v=m?m[1]:'120';
+      window.__kifix='v5';
       function clean(bs){
-        var out=[],i;
-        for(i=0;i<bs.length;i++){if(!/webview/i.test(bs[i].brand)){out.push(bs[i]);}}
-        var hasC=false;
-        for(i=0;i<out.length;i++){if(/chrome/i.test(out[i].brand)){hasC=true;break;}}
-        if(!hasC){
-          var m=/Chrome\/(\d+)/.exec(navigator.userAgent),v=m?m[1]:'120';
-          out.push({brand:'Chromium',version:v});
-          out.push({brand:'Google Chrome',version:v});
+        var out=[],i,hasGC=false,hasCh=false;
+        for(i=0;i<bs.length;i++){
+          var b=bs[i];
+          if(/webview/i.test(b.brand)){continue;}
+          out.push(b);
+          if(/google chrome/i.test(b.brand)){hasGC=true;}
+          if(/chromium/i.test(b.brand)){hasCh=true;}
         }
+        if(!hasCh){out.push({brand:'Chromium',version:v});}
+        if(!hasGC){out.push({brand:'Google Chrome',version:v});}
         return out;
       }
       try{
         var uad=navigator.userAgentData;
         if(uad){
-          var ob=uad.brands;
-          Object.defineProperty(uad,'brands',{configurable:true,enumerable:true,get:function(){return clean(ob);}});
-          var oh=uad.getHighEntropyValues;
-          if(typeof oh==='function'){
-            var bound=oh.bind(uad);
-            uad.getHighEntropyValues=function(h){return bound(h).then(function(r){try{r.brands=clean(r.brands);}catch(e){}return r;});};
+          var rawB=null; try{rawB=uad.brands;}catch(e){}
+          var proto=Object.getPrototypeOf(uad);
+          if(proto){
+            var d=Object.getOwnPropertyDescriptor(proto,'brands');
+            var orig=(d&&typeof d.get==='function')?d.get:null;
+            Object.defineProperty(proto,'brands',{
+              configurable:true,enumerable:true,
+              get:function(){
+                try{
+                  var raw=(orig?orig.call(this):null)||rawB||[];
+                  return clean(raw);
+                }catch(e){
+                  return [{brand:'Chromium',version:v},{brand:'Google Chrome',version:v}];
+                }
+              }
+            });
+            var g=proto.getHighEntropyValues;
+            if(typeof g==='function'){
+              proto.getHighEntropyValues=function(h){
+                var bound=g.bind(this);
+                return bound(h).then(function(r){try{r.brands=clean(r.brands);}catch(e){}return r;});
+              };
+            }
           }
+          try{
+            Object.defineProperty(uad,'brands',{configurable:true,enumerable:true,
+              get:function(){return clean(rawB||[]);}});
+          }catch(e){}
         }
-      }catch(e){}
+      }catch(e){window.__kifix='err';}
       try{
         var pl=[{name:'Chrome PDF Viewer',filename:'internal-pdf-viewer',description:'Portable Document Format',length:1}];
         pl[0][0]={type:'application/pdf',suffixes:'pdf',description:'Portable Document Format'};
@@ -768,7 +796,7 @@ private class CookieCaptureClient(
      */
     private fun probePageMetrics(view: WebView?, url: String?, phase: String) {
         view ?: return
-        val probe = "(function(){try{var b=navigator.userAgentData?navigator.userAgentData.brands.map(function(x){return x.brand}).join('/'):'nouad';return (document.body?document.body.scrollHeight:'nobody')+'|'+document.readyState+'|plugins='+navigator.plugins.length+'|brands='+b;}catch(e){return 'err:'+e;}})()"
+        val probe = "(function(){try{var b=navigator.userAgentData?navigator.userAgentData.brands.map(function(x){return x.brand}).join('/'):'nouad';return (document.body?document.body.scrollHeight:'nobody')+'|'+document.readyState+'|plugins='+navigator.plugins.length+'|brands='+b+'|shim='+(window.__kifix||'none');}catch(e){return 'err:'+e;}})()"
         view.evaluateJavascript(probe) { result ->
             AuthLogStore.log('W', "probe[$phase] url=$url metrics=$result")
         }
