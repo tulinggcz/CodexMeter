@@ -380,6 +380,12 @@ fun CodexMeterNavHost(
                                         // modal flash). Now: CSS keeps the page full-height, clicks
                                         // are rate-limited and never match logout, and an observer
                                         // retries until the login modal's inputs actually mount.
+                                        // If the console page never becomes visible anyway (still
+                                        // near-zero height after 10s with no form in sight), fall
+                                        // back to the www.kimi.com landing page — the kimi-auth
+                                        // cookie is domain-scoped, so logging in there works the
+                                        // same. session-level flag prevents a redirect loop if the
+                                        // landing page is broken too.
                                         injectOnLoadJs = """
                                             (function(){
                                               var s=document.createElement('style');
@@ -405,6 +411,16 @@ fun CodexMeterNavHost(
                                               var obs=new MutationObserver(function(){if(tryOpen())obs.disconnect();});
                                               obs.observe(document.documentElement,{childList:true,subtree:true});
                                               setTimeout(function(){obs.disconnect();},15000);
+                                              if(location.pathname.indexOf('/code')===0&&!sessionStorage.getItem('kifixFellBack')){
+                                                setTimeout(function(){
+                                                  if(loginShown())return;
+                                                  var h=document.body?document.body.scrollHeight:0;
+                                                  if(h<10){
+                                                    try{sessionStorage.setItem('kifixFellBack','1');}catch(e){}
+                                                    location.replace('https://www.kimi.com/');
+                                                  }
+                                                },10000);
+                                              }
                                             })();
                                         """.trimIndent(),
                                     )

@@ -106,6 +106,10 @@ android {
                 "proguard-rules.pro",
             )
             signingConfig = signingConfigs.getByName("release")
+            // This fork's release builds install beside the official Play/GitHub build instead of
+            // clashing with its signing certificate; the suffix keeps both on one device.
+            applicationIdSuffix = ".kifix"
+            versionNameSuffix = "-kifix"
         }
     }
 

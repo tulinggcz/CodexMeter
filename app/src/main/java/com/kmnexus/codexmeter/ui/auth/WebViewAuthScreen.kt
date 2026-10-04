@@ -521,7 +521,18 @@ private fun configureAuthWebView(webView: WebView, useSoftwareLayer: Boolean) {
     cookieManager.setAcceptCookie(true)
     cookieManager.setAcceptThirdPartyCookies(webView, true)
     // Some login pages (e.g. Google sign-in) need a chrome client to render / drive JS dialogs.
-    webView.webChromeClient = WebChromeClient()
+    // Also mirrors every page console message into logcat so blank-page failures (Kimi) can be
+    // diagnosed from a bug report without a laptop attached.
+    webView.webChromeClient = object : WebChromeClient() {
+        override fun onConsoleMessage(message: android.webkit.ConsoleMessage?): Boolean {
+            message ?: return false
+            android.util.Log.w(
+                "WebViewAuth",
+                "console[${message.messageLevel()}] ${message.message()} @ ${message.sourceLine()}"
+            )
+            return true
+        }
+    }
     // Cookie-capture pages (Kimi/Cursor) can paint blank on a hardware layer in a Compose
     // AndroidView, so they render on a software layer. The OAuth pages keep the hardware layer:
     // forcing software there compresses Google's tall sign-in page vertically.
@@ -556,7 +567,57 @@ private class CookieCaptureClient(
 ) : WebViewClient() {
     override fun onPageFinished(view: WebView?, url: String?) {
         onLoadJs?.let { view?.evaluateJavascript(it, null) }
+        probePageMetrics(view, url, "finished")
         tryExtract()
+    }
+
+    override fun onReceivedError(
+        view: WebView?,
+        request: WebResourceRequest?,
+        error: android.webkit.WebResourceError?,
+    ) {
+        // Main-frame failures blank the whole page; subframe/resource failures usually don't.
+        if (request?.isForMainFrame == true) {
+            android.util.Log.e("WebViewAuth", "mainFrameError url=${request.url} err=${error?.description}")
+        }
+    }
+
+    override fun onReceivedHttpError(
+        view: WebView?,
+        request: WebResourceRequest?,
+        errorResponse: android.webkit.WebResourceResponse?,
+    ) {
+        if (request?.isForMainFrame == true) {
+            android.util.Log.e(
+                "WebViewAuth",
+                "mainFrameHttpError url=${request.url} status=${errorResponse?.statusCode} reason=${errorResponse?.reasonPhrase}"
+            )
+        }
+    }
+
+    override fun onRenderProcessGone(view: WebView?, detail: android.webkit.RenderProcessGoneDetail?) {
+        // The renderer crashed; the WebView is dead and would stay white forever. Log it and
+        // restart the load so the user sees something actionable instead of a blank surface.
+        android.util.Log.e("WebViewAuth", "renderProcessGone crashed=${detail?.didCrash()} — reloading")
+        view?.reload()
+    }
+
+    /**
+     * Samples document height + readyState right after load and again once the SPA has had time
+     * to hydrate. A normal height with a still-white surface points at the render layer; a 0
+     * height points at the page collapsing (kimi /code).
+     */
+    private fun probePageMetrics(view: WebView?, url: String?, phase: String) {
+        view ?: return
+        val probe = "(function(){try{return document.body?document.body.scrollHeight+'|'+document.readyState:'nobody'}catch(e){return 'err'}})()"
+        view.evaluateJavascript(probe) { result ->
+            android.util.Log.w("WebViewAuth", "probe[$phase] url=$url metrics=$result")
+        }
+        view.postDelayed({
+            view.evaluateJavascript(probe) { result ->
+                android.util.Log.w("WebViewAuth", "probe[$phase+4s] url=$url metrics=$result")
+            }
+        }, 4000)
     }
 
     override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
